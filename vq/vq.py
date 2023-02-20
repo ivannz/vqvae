@@ -159,8 +159,7 @@ class VectorQuantizedVAE(nn.Module):
         emb = self.weight
         sqr = (emb * emb).sum(dim=1)
 
-        # compute the covariance of the input vecrtors with the embeddings
-        # cov = torch.tensordot(input, emb, dims=([at], [-1]))
+        # compute the covariance of the input vectors with the embeddings
         cov = torch.einsum("...j, kj -> ...k", input.movedim(self.dim, -1), emb)
         return torch.argmin(sqr.sub(cov, alpha=2), dim=-1)
 
@@ -210,41 +209,17 @@ class VectorQuantizedVAE(nn.Module):
         return f"{self.num_embeddings}, {self.embedding_dim}"
 
 
-class VQVAEEmbeddings(nn.Identity):
-    """Extract real-valued vector-quantized embeddings from VQ outputs."""
-
-    def __init__(self, module: VectorQuantizedVAE) -> None:
-        if not isinstance(module, VectorQuantizedVAE):
-            raise TypeError(
-                f"{type(self).__name__} wraps VQ" f" layers directly. Got `{module}`."
-            )
-        super().__init__()
-        self.wrapped = module
-
-    def forward(self, input: Tensor) -> Tensor:
-        # `out.values` are the diffable embeddings
-        return self.wrapped(input).values
-
-
-class VQVAEIntegerCodes(nn.Identity):
+class ExtractCodes(nn.Module):
     """Extract integer-valued codes from VQ outputs."""
 
-    def __init__(self, module: VectorQuantizedVAE) -> None:
-        if not isinstance(module, VectorQuantizedVAE):
-            raise TypeError(
-                f"{type(self).__name__} wraps VQ" f" layers directly. Got `{module}`."
-            )
-        super().__init__()
-        self.wrapped = module
-
-    def forward(self, input: Tensor) -> Tensor:
-        # `out.indices` are the cluster ids
-        return self.wrapped(input).indices
+    def forward(self, input: VQEOutput) -> Tensor:
+        assert isinstance(input, VQEOutput)
+        return input.indices  # `.indices` are the cluster ids
 
 
-class ExtractEmbeddings(nn.Identity):
+class ExtractEmbeddings(nn.Module):
     """Extract real-valued vector-quantized embeddings from VQ outputs."""
 
     def forward(self, input: VQEOutput) -> Tensor:
         assert isinstance(input, VQEOutput)
-        return input.values
+        return input.values  # `.values` are the quantized embeddings
