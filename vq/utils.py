@@ -212,6 +212,10 @@ class VQEMAUpdater(BaseVQHelper):
 
         return out
 
+    @property
+    def named_entropy(self):
+        return {self._names[m]: v for m, v in self.entropy.items()}
+
 
 class VQLossHelper(BaseVQHelper):
     r"""A context object, which tracks the embed-commit losses of the VQ layers
