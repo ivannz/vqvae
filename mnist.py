@@ -1,7 +1,9 @@
 import tqdm
-import torch
-from matplotlib import pyplot as plt
+import torch  # SEGFAULTS unless first!
+# from matplotlib import pyplot as plt
 
+import wandb
+# import numpy as np
 from torch import nn, Tensor
 from torch.nn import functional as F
 
@@ -9,13 +11,34 @@ from torchvision.datasets import MNIST
 from torchvision.transforms import ToTensor, Compose, Normalize
 from torch.utils.data import DataLoader
 
-from torchvision.utils import make_grid
+from grid import make_grid
 
 # VQ is basically an online non-stationary k-means, and thus can
 #  be considered an unsupervised denoiser
 from vq import VectorQuantizedVAE, ExtractEmbeddings
 from vq.utils import VQEMAUpdater, VQLossHelper
 
+# the arch and embedding settings were borrowed from
+#    https://keras.io/examples/generative/vq_vae/
+config = {
+    "n_embeddings": 64,
+    "n_latents": 16,
+    "f_vq_alpha": 0.25,
+    "f_ema_update": True,
+    "f_lr": 1e-3,
+    "n_batch_size": 128,
+    "n_epochs": 5,
+}
+
+wandb.init(
+    project="vq-vae",
+    save_code=False,
+    tags=["mnist"],
+    mode="online",
+    config=config,
+)
+
+cfg = wandb.config
 
 # get the MINST dataset
 transform = Compose([ToTensor(), Normalize((0.5,), (1.0,))])
@@ -25,10 +48,13 @@ datasets = {
 }
 
 # split and prep the data feeds
+gen = torch.Generator()
+gen.manual_seed(0xdeadc0de)  # for fixed random sample of reference images
+
 feeds_specs = {
-    "train": ("train", {"batch_size": 128, "shuffle": True}),
+    "train": ("train", {"batch_size": cfg.n_batch_size, "shuffle": True}),
     "test": ("test", {"batch_size": 128, "shuffle": False}),
-    "reference": ("train", {"batch_size": 64, "shuffle": True})
+    "reference": ("train", {"batch_size": 64, "shuffle": True, "generator": gen})
 }
 feeds = {k: DataLoader(datasets[src], **spec)
          for k, (src, spec) in feeds_specs.items()}
@@ -37,18 +63,17 @@ feeds = {k: DataLoader(datasets[src], **spec)
 refx, refy = next(iter(feeds["reference"]))
 
 # build the vqvae
-n_embeddings, n_latents = 64, 16
 model = nn.Sequential(  # FIXME 28x28 -->> 29x29
     nn.Conv2d(1, 32, 3, 2),
     nn.ReLU(),
     nn.Conv2d(32, 64, 3, 2),
     nn.ReLU(),
-    nn.Conv2d(64, n_latents, 1, 1),
+    nn.Conv2d(64, cfg.n_latents, 1, 1),
 
-    VectorQuantizedVAE(n_embeddings, n_latents, -3),
+    VectorQuantizedVAE(cfg.n_embeddings, cfg.n_latents, -3),
 
     ExtractEmbeddings(),
-    nn.ConvTranspose2d(n_latents, 64, 3, 2),
+    nn.ConvTranspose2d(cfg.n_latents, 64, 3, 2),
     nn.ReLU(),
     nn.ConvTranspose2d(64, 32, 3, 2),
     nn.ReLU(),
@@ -64,7 +89,7 @@ def apply(model: nn.Module, X: Tensor) -> tuple[Tensor, Tensor]:
     return recx.clamp(-0.5, +0.5), vqout.indices
 
 
-optim = torch.optim.AdamW(model.parameters(), lr=1e-3)
+optim = torch.optim.AdamW(model.parameters(), lr=cfg.f_lr)
 
 # if update is False then we do not make ema updates, but use
 #  it to compute diagnostic entropy (health of the clustering)
@@ -77,13 +102,13 @@ optim = torch.optim.AdamW(model.parameters(), lr=1e-3)
 #  On the otther hand, we could try adding new centroids to decrease
 #  cluster overall clsuter variance (cluster splitting).
 hlp = VQLossHelper(model, reduction="mean")
-ema = VQEMAUpdater(model, alpha=0.25, update=True)
+ema = VQEMAUpdater(model, alpha=cfg.f_vq_alpha, update=cfg.f_ema_update)
 
-hist, n_display, n_updates, n_display_every = [], 0, 0, 25
-for ep in range(15):
+n_display_every = 25
+n_display, n_updates = 0, 0
+for ep in range(cfg.n_epochs):
+    model.train()
     for bx, by in tqdm.tqdm(feeds["train"], ncols=50, disable=False):
-        model.train()
-
         # use the loss helper and the EMA centroid updates
         with hlp, ema:
             out = model(bx)[..., :28, :28]
@@ -104,33 +129,19 @@ for ep in range(15):
 
         n_updates += 1
 
-        # log some history
-        hist.append((*ema.entropy.values(), float(vq_ell), float(ae_loss)))
-
+        # display reconstriction success
         if n_updates >= n_display:
             n_display = n_updates + n_display_every
-            plt.close()
-            plt.show()
-            plt.ion()
 
             model.eval()
-            fig, axes = plt.subplots(2, 2, dpi=80, figsize=(7, 7))
-            (ax1, ax2), (ax3, ax4) = axes
             outx, outc = apply(model, refx)
-            ax1.imshow(make_grid(refx).movedim(0, -1) + 0.5)
-            ax2.imshow(make_grid(outx).movedim(0, -1) + 0.5)
-
-            ent, vq, ae = zip(*hist)
-            ax3.semilogy(ae, label="ae")
-            ax3.semilogy(vq, label="vq")
-            ax3.legend()
-
-            ax4.plot(ent)
-
-            plt.tight_layout()
-            plt.draw()
-            plt.pause(0.01)
-
+            image = wandb.Image(make_grid(outx.movedim(1, -1), aspect=(1, 1)))
+            wandb.log({"reconstruction": image}, commit=False)
             model.train()
 
-    model.eval()
+        # log some history
+        wandb.log({
+            **{"entropy/" + k: v for k, v in ema.named_entropy.items()},
+            "loss/vq": float(vq_ell),
+            "loss/ae": float(ae_loss),
+        }, commit=True)
