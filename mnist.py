@@ -1,3 +1,6 @@
+import os
+import git
+import time
 import tqdm
 import torch  # SEGFAULTS unless first!
 # from matplotlib import pyplot as plt
@@ -145,3 +148,19 @@ for ep in range(cfg.n_epochs):
             "loss/vq": float(vq_ell),
             "loss/ae": float(ae_loss),
         }, commit=True)
+
+
+# save the trained model
+__dttm__ = time.strftime("%Y%m%d_%H%M%S")
+
+ckpt = os.path.abspath('./checkpoints')
+
+os.makedirs(ckpt, exist_ok=True)
+torch.save(
+    dict(
+        __dttm__=__dttm__,
+        __commit__=git.Repo(".").head.commit.hexsha,
+        config=wandb.config.as_dict(),
+        model=model.state_dict(),
+    ), os.path.join(ckpt, f"ckpt-{__dttm__}-{wandb.run.id}.pt")
+)
