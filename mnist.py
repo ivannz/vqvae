@@ -23,8 +23,8 @@ from vq.utils import VQEMAUpdater, VQLossHelper
 config = {
     "n_embeddings": 64,
     "n_latents": 16,
-    "f_vq_alpha": 0.25,
-    "f_ema_update": True,
+    "f_vq_alpha": 0.05,  # 0.05 seems to be quite good
+    "f_ema_update": True,  # EMA is good: sgd fails almost every time
     "f_lr": 1e-3,
     "n_batch_size": 128,
     "n_epochs": 5,
@@ -81,9 +81,9 @@ model = nn.Sequential(  # FIXME 28x28 -->> 29x29
 )
 
 
-# run the vqvae in inference mode
-@torch.inference_mode()
+@torch.no_grad()
 def apply(model: nn.Module, X: Tensor) -> tuple[Tensor, Tensor]:
+    """run the vqvae in inference mode"""
     vqout = model[:6](X)
     recx = model[6:](vqout)[..., :28, :28]
     return recx.clamp(-0.5, +0.5), vqout.indices
