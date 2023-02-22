@@ -182,7 +182,7 @@ class VectorQuantizedVAE(nn.Module):
         # XXX we still provide all the data necessary for the losses, which
         #  would be non-diffable zero constants in this particular case.
         if not input.is_floating_point():
-            vectors = self.fetch(input).detach()
+            vectors = self.fetch(input, at=self.dim).detach()
             return VQEOutput(vectors, input, vectors)
 
         # Now, if `input` is a numeric tensor, this means that we can actually
